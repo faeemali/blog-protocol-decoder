@@ -1,19 +1,23 @@
 /**
  * Protocol is:
- * <header><len><data><checksum><footer>
+ * <header><len><data_start><data><checksum><footer>
  * where:
  * - header is always 0x01
  * - len is always 2 bytes, specified as low byte, high byte
+ * - data_start is always 0xFF
  * - data is some binary data, depending on len
  * - checksum is a 2 byte value, specified as low byte, high byte
  * - footer is always 0x00
  *
- * The crc is calculated over the length and data bytes
+ * The crc is calculated over the length and data bytes only
  */
 use std::io::{self, Read};
+use std::thread::sleep;
+use std::time::Duration;
 
 const HEADER: u8 = 0x01;
 const FOOTER: u8 = 0x00;
+const DATA_START: u8 = 0xFF;
 
 const BUFFERSIZE: usize = 8; //make this any size you like > 0
 
@@ -22,6 +26,7 @@ enum States {
     GetHeader,
     LenLow,
     LenHigh,
+    GetDataStart,
     GetData,
     CrcLow,
     CrcHigh,
@@ -88,12 +93,20 @@ fn protocol(ctx: &mut Context, b: u8) -> ReturnTypes {
             ctx.expected_len |= (b as u16) << 8;
             //println!("expected len is: {}", ctx.expected_len);
             if ctx.expected_len == 0 {
-                ctx.curr_state = States::GetHeader;
+                ctx.reset();
                 return ReturnTypes::Continue;
             }
             ctx.calculated_crc = update_crc(ctx.calculated_crc, b);
             ctx.curr_pos = 0;
             ctx.data.clear();
+            ctx.curr_state = States::GetDataStart;
+        }
+
+        States::GetDataStart => {
+            if b != DATA_START {
+                ctx.reset();
+                return ReturnTypes::Continue;
+            }
             ctx.curr_state = States::GetData;
         }
 
@@ -118,6 +131,7 @@ fn protocol(ctx: &mut Context, b: u8) -> ReturnTypes {
             ctx.received_crc |= (b as u16) << 8;
             if ctx.calculated_crc != ctx.received_crc {
                 /* crc problem. Invalid message */
+                ctx.reset();
                 return ReturnTypes::Continue;
             }
             ctx.curr_state = States::GetFooter;
@@ -134,10 +148,10 @@ fn protocol(ctx: &mut Context, b: u8) -> ReturnTypes {
 }
 
 fn show_data(data: &Vec<u8>) {
-    println!("Got message: ({} bytes)", data.len());
+    println!("Got message: ({} byte(s))", data.len());
 
     for j in 0..data.len() {
-        print!("{} ", data[j]);
+        print!("{:02X} ", data[j]);
         if j > 0 && (j % 16) == 0 {
             println!();
         }
@@ -162,6 +176,10 @@ fn main() -> io::Result<()> {
                 }
             }
         }
+
+        //this is so we don't eat all the CPU time. It is not
+        //usually necessary
+        sleep(Duration::from_millis(10));
     }
 
     Ok(())
